@@ -1,8 +1,8 @@
 // Import required modules.
-const chokidar = require("chokidar"); // For watching file changes.
-const fs = require("fs-extra"); // For file system operations.
-const path = require("path"); // For working with file paths.
-const crypto = require("crypto"); // For generating file hashes.
+const chokidar = require("chokidar"); // Module for watching file changes.
+const fs = require("fs-extra"); // Module for file system operations.
+const path = require("path"); // Module for handling file paths.
+const crypto = require("crypto"); // Module for generating file hashes.
 
 // Define paths for Blade views and translation files.
 const viewsPath = path.join(__dirname, "../../../resources/views");
@@ -12,28 +12,96 @@ console.log(
     "🔍 Starting async watch on Blade files for translation updates..."
 );
 
-// Caches for file content and extracted translations.
+// Caches for file content hashes and extracted translations.
 const fileHashCache = {};
 const fileTranslationCache = {};
+
+// --- Processing Queue to limit concurrency for weak devices ---
+const processQueue = [];
+let activeProcesses = 0;
+const MAX_CONCURRENT_PROCESSES = 2; // Adjust as needed for production
+
+/**
+ * Processes the next file in the queue if concurrency limit allows.
+ */
+async function processQueueRunner() {
+    if (
+        activeProcesses >= MAX_CONCURRENT_PROCESSES ||
+        processQueue.length === 0
+    ) {
+        return;
+    }
+    const filePath = processQueue.shift();
+    activeProcesses++;
+    try {
+        await processBladeFile(filePath);
+    } catch (err) {
+        console.error(`Error processing file ${filePath}:`, err);
+    } finally {
+        activeProcesses--;
+        setImmediate(processQueueRunner);
+    }
+}
+
+/**
+ * Enqueues a file for processing.
+ * @param {string} filePath - The file path to process.
+ */
+function enqueueFile(filePath) {
+    processQueue.push(filePath);
+    processQueueRunner();
+}
+
+// --- End of Processing Queue ---
 
 /**
  * Parses a PHP array string (from a translation file) into a JavaScript object.
  * Converts the PHP array format to a valid JSON object.
  *
  * @param {string} content - The content of the PHP file.
- * @returns {Object} - The resulting object.
+ * @returns {Object} - The resulting JavaScript object.
  */
 function parsePhpArray(content) {
+    // Remove PHP opening tag and 'return'
     let trimmed = content.replace(/<\?php\s+return\s+/g, "").trim();
     if (trimmed.endsWith(";")) {
         trimmed = trimmed.slice(0, -1).trim();
     }
-    // Convert PHP array syntax to JSON object syntax.
+    // Convert the outer array from [ ... ] to { ... }
     if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
         trimmed = "{" + trimmed.slice(1, -1) + "}";
     }
+    // Replace PHP array syntax (=>) with JSON syntax (:)
     let jsonStr = trimmed.replace(/=>/g, ":").replace(/'/g, '"');
+
+    /**
+     * Recursively converts associative arrays (PHP arrays with keys)
+     * represented in square brackets to JSON objects.
+     * @param {string} str - The string to convert.
+     * @returns {string} - The converted string.
+     */
+    function convertAssociativeArrays(str) {
+        const pattern = /\[([^\[\]]*?)\]/g;
+        let oldStr;
+        do {
+            oldStr = str;
+            str = str.replace(pattern, (match, content) => {
+                if (content.indexOf(":") > -1) {
+                    return "{" + content + "}";
+                }
+                return match;
+            });
+        } while (str !== oldStr);
+        return str;
+    }
+    jsonStr = convertAssociativeArrays(jsonStr);
+
+    // Remove extra commas before closing braces/brackets.
     jsonStr = jsonStr.replace(/,(\s*[}\]])/g, "$1");
+
+    // Insert missing commas between properties if needed.
+    jsonStr = jsonStr.replace(/}(\s*)"([^,}\s])/g, '}, "$2');
+
     try {
         return JSON.parse(jsonStr);
     } catch (e) {
@@ -70,8 +138,9 @@ function convertToPHPArray(obj, indentLevel = 1) {
 }
 
 /**
- * Extracts translations from a Blade file content.
+ * Extracts translations from Blade file content.
  * Looks for blocks between @TransSFC('lang') and @endTransSFC.
+ * Supports nested translations.
  *
  * @param {string} content - The content of the Blade file.
  * @param {string} filePath - The absolute path of the file.
@@ -80,7 +149,7 @@ function convertToPHPArray(obj, indentLevel = 1) {
 function extractTranslations(content, filePath) {
     const blockRegex = /@TransSFC\(['"](\w+)['"]\)([\s\S]*?)@endTransSFC/g;
     const translations = {};
-    // Build the key prefix from the file's relative path.
+    // Build prefix from the file's relative path.
     const relativePath = path
         .relative(viewsPath, filePath)
         .replace(/\\/g, "/")
@@ -90,25 +159,42 @@ function extractTranslations(content, filePath) {
     let match;
     while ((match = blockRegex.exec(content)) !== null) {
         const lang = match[1].trim();
-        const arrayContent = match[2].trim();
+        let arrayContent = match[2].trim();
         if (!arrayContent.startsWith("[") || !arrayContent.endsWith("]")) {
             console.error(
-                `❌ ${filePath}: Block for '${lang}' must be enclosed in square brackets.`
+                `${filePath}: Block for '${lang}' must be enclosed in square brackets.`
             );
             continue;
         }
-        const keyValueRegex = /["']([^"']+)["']\s*=>\s*["']([^"']+)["']/g;
+        // Use parsePhpArray to convert the block content to a JavaScript object.
+        const parsedObj = parsePhpArray(`<?php return ${arrayContent};`);
+        if (typeof parsedObj !== "object" || parsedObj === null) {
+            console.error(
+                `${filePath}: Failed to parse translations for language ${lang}.`
+            );
+            continue;
+        }
         if (!translations[lang]) {
             translations[lang] = {};
         }
-        let pair;
-        while ((pair = keyValueRegex.exec(arrayContent)) !== null) {
-            const key = pair[1].trim();
-            const value = pair[2].trim();
-            // Build the final key with the "sfc." prefix.
-            const finalKey = `sfc.${prefix}.${key}`;
-            translations[lang][finalKey] = value;
+        /**
+         * Recursively flattens nested translation objects.
+         * @param {Object} obj - The translation object.
+         * @param {string} currentKey - The current key path.
+         */
+        function flattenTranslations(obj, currentKey = "") {
+            Object.keys(obj).forEach((key) => {
+                const value = obj[key];
+                const newKey = currentKey ? `${currentKey}.${key}` : key;
+                if (typeof value === "object" && value !== null) {
+                    flattenTranslations(value, newKey);
+                } else {
+                    // Add the 'sfc.' prefix with the file path prefix.
+                    translations[lang][`sfc.${prefix}.${newKey}`] = value;
+                }
+            });
         }
+        flattenTranslations(parsedObj);
     }
     return translations;
 }
@@ -131,7 +217,7 @@ async function updateTranslationForFile(lang, prefix, newTranslations) {
             const fileContent = await fs.readFile(langFile, "utf-8");
             existingData = parsePhpArray(fileContent);
         } catch (error) {
-            console.error(`⚠️ Error parsing ${langFile}:`, error);
+            console.error(`Error parsing ${langFile}:`, error);
         }
     }
     // Remove old translations related to this Blade file.
@@ -142,21 +228,22 @@ async function updateTranslationForFile(lang, prefix, newTranslations) {
     });
     const mergedData = { ...existingData, ...newTranslations };
     if (JSON.stringify(existingData) === JSON.stringify(mergedData)) {
-        console.log(`🔄 No changes for ${lang} in ${langFile}.`);
+        console.log(`No changes for ${lang} in ${langFile}.`);
         return;
     }
     const phpArray = convertToPHPArray(mergedData);
     const phpContent = `<?php\n\nreturn ${phpArray};\n`;
     try {
         await fs.outputFile(langFile, phpContent, "utf-8");
-        console.log(`✅ Updated translations for ${lang} in ${langFile}`);
+        console.log(`Updated translations for ${lang} in ${langFile}`);
     } catch (error) {
-        console.error(`❌ Failed to update ${langFile}:`, error);
+        console.error(`Failed to update ${langFile}:`, error);
     }
 }
 
 /**
  * Removes translations associated with a deleted Blade file.
+ * Also clears the file caches to allow reprocessing upon re-addition.
  *
  * @param {string} filePath - The absolute path of the deleted file.
  */
@@ -178,7 +265,7 @@ async function removeTranslationsForFile(filePath) {
                     const fileContent = await fs.readFile(langFile, "utf-8");
                     data = parsePhpArray(fileContent);
                 } catch (error) {
-                    console.error(`⚠️ Error parsing ${langFile}:`, error);
+                    console.error(`Error parsing ${langFile}:`, error);
                 }
                 let modified = false;
                 Object.keys(data).forEach((key) => {
@@ -192,14 +279,17 @@ async function removeTranslationsForFile(filePath) {
                     const phpContent = `<?php\n\nreturn ${phpArray};\n`;
                     await fs.outputFile(langFile, phpContent, "utf-8");
                     console.log(
-                        `🗑️ Removed translations for prefix ${filePrefix} in ${langFile}`
+                        `Removed translations for prefix ${filePrefix} in ${langFile}`
                     );
                 }
             }
         }
+        // Clear caches for the deleted file to ensure reprocessing on re-addition.
+        delete fileHashCache[filePath];
+        delete fileTranslationCache[filePath];
     } catch (error) {
         console.error(
-            `❌ Error removing translations for file ${filePath}:`,
+            `Error removing translations for file ${filePath}:`,
             error
         );
     }
@@ -220,20 +310,20 @@ async function processBladeFile(filePath) {
         const newExtracted = extractTranslations(content, filePath);
         const hash = crypto.createHash("md5").update(content).digest("hex");
 
-        // Skip processing if the file content is unchanged.
+        // Skip processing if file content is unchanged.
         if (fileHashCache[filePath] === hash) {
             return;
         }
         fileHashCache[filePath] = hash;
 
-        // Determine file prefix for translation keys.
+        // Determine the prefix for translation keys based on the file's relative path.
         const relativePath = path
             .relative(viewsPath, filePath)
             .replace(/\\/g, "/")
             .replace(".blade.php", "");
         const prefix = relativePath.split("/").join(".");
 
-        // Merge the language keys from previous and new extraction.
+        // Merge translations for each language.
         const previousExtracted = fileTranslationCache[filePath] || {};
         const languages = new Set([
             ...Object.keys(newExtracted),
@@ -249,7 +339,7 @@ async function processBladeFile(filePath) {
         // Update cache with new extraction.
         fileTranslationCache[filePath] = newExtracted;
     } catch (error) {
-        console.error(`❌ Error processing file ${filePath}:`, error);
+        console.error(`Error processing file ${filePath}:`, error);
     }
 }
 
@@ -265,7 +355,7 @@ function debounceProcess(filePath, delay = 300) {
         clearTimeout(debounceMap[filePath]);
     }
     debounceMap[filePath] = setTimeout(() => {
-        processBladeFile(filePath);
+        enqueueFile(filePath);
         delete debounceMap[filePath];
     }, delay);
 }
@@ -287,29 +377,34 @@ async function scanAllBladeFiles(dir) {
             }
         }
     } catch (error) {
-        console.error(`❌ Error scanning directory ${dir}:`, error);
+        console.error(`Error scanning directory ${dir}:`, error);
     }
 }
 
 // Initial scan: Process all existing Blade files.
 scanAllBladeFiles(viewsPath)
-    .then(() => console.log("✅ Initial scan completed."))
-    .catch((error) => console.error("❌ Initial scan error:", error));
+    .then(() => console.log("Initial scan completed."))
+    .catch((error) => console.error("Initial scan error:", error));
 
-// Set up watchers for Blade file changes.
+// Set up watchers for Blade file changes with optimized options for production.
 chokidar
-    .watch(viewsPath, { persistent: true, ignoreInitial: true })
+    .watch(viewsPath, {
+        persistent: true,
+        ignoreInitial: true,
+        // awaitWriteFinish helps prevent multiple triggers on slower devices.
+        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
+    })
     .on("add", (filePath) => {
-        console.log(`✏️ File added: ${filePath}`);
+        // console.log(`File added: ${filePath}`);
         debounceProcess(filePath);
     })
     .on("change", (filePath) => {
-        console.log(`✏️ File changed: ${filePath}`);
+        // console.log(`File changed: ${filePath}`);
         debounceProcess(filePath);
     })
     .on("unlink", (filePath) => {
-        console.log(`🗑️ File removed: ${filePath}`);
+        // console.log(`File removed: ${filePath}`);
         removeTranslationsForFile(filePath);
     });
 
-console.log("🚀 Async Lang watcher is running...");
+console.log("Async Lang watcher is running...");
