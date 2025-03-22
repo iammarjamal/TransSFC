@@ -2,16 +2,11 @@
 
 namespace TransSFC\TransSFC;
 
-use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Blade;
-use Illuminate\Support\Facades\Lang;
-use Illuminate\Support\Facades\View;
-use Illuminate\Support\Facades\File;
-
+use Illuminate\Support\Str;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
-use TransSFC\TransSFC\Commands\TransSFCBuild;
 use TransSFC\TransSFC\Commands\TransSFCServe;
 
 class TransSFCServiceProvider extends PackageServiceProvider
@@ -25,10 +20,28 @@ class TransSFCServiceProvider extends PackageServiceProvider
             ]);
     }
 
-    public function boot()
+    public function packageBooted()
     {
-        // Helpers
-        require_once __DIR__ . '/Helpers/TransSFCHelper.php';
+        // Define the Blade directive 'useTrans'
+        Blade::directive('useTrans', function ($expression) {
+            // Get the full path of the view being executed
+            $view = Blade::getPath();
+
+            // Extract the part after "views/"
+            $view = Str::after($view, resource_path('views') . DIRECTORY_SEPARATOR);
+
+            // Replace / or \ with . and remove the .blade.php extension
+            $view = Str::replace(DIRECTORY_SEPARATOR, '.', Str::beforeLast($view, '.blade.php'));
+
+            // Use the passed variable as the key for the text to be translated
+            $textKey = trim($expression, "'\"");
+
+            // Build the translation key by combining the path and the text key
+            $translationKey = "app.sfc.{$view}.{$textKey}";
+
+            // Return the translation based on the generated key
+            return "<?php echo trans('{$translationKey}'); ?>";
+        });
 
         // Define the `@TransSFC` directive in Blade
         Blade::directive('TransSFC', function ($expression) {
