@@ -20,20 +20,21 @@ class TransSFCServe extends Command
             return self::FAILURE;
         }
 
-        // إنشاء عملية مع إمكانية الإخراج في الوقت الحقيقي
+        // Create a process with real-time output
         $process = new SymfonyProcess(['node', $nodeScriptPath]);
+        $process->setTimeout(null); // No timeout (infinite)
         $process->start();
 
-        // قراءة الإخراج أثناء التنفيذ
+        // Read the output while running
         foreach ($process as $type => $data) {
             if ($process::OUT === $type) {
-                $this->info(trim($data)); // إظهار console.log
+                $this->info(trim($data)); // Show console.log
             } else {
-                $this->error(trim($data)); // إظهار الأخطاء
+                $this->error(trim($data)); // Show errors
             }
         }
 
-        // التحقق من نجاح العملية
+        // Check if the process was successful
         if (!$process->isSuccessful()) {
             $this->error('❌ Failed: ' . $process->getErrorOutput());
             return self::FAILURE;

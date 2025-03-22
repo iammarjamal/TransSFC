@@ -25,8 +25,11 @@ class TransSFCServiceProvider extends PackageServiceProvider
             ]);
     }
 
-    public function packageBooted()
+    public function boot()
     {
+        // Helpers
+        require_once __DIR__ . '/Helpers/TransSFCHelper.php';
+
         // Define the `@TransSFC` directive in Blade
         Blade::directive('TransSFC', function ($expression) {
             // Start a PHP block and assign the variable $TransSFC (this should be properly initialized)
