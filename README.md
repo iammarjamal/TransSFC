@@ -81,4 +81,4 @@ This makes it easy to manage translations directly within Blade files while ensu
 <br /><br />
 
 ## License  
-The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+The MIT License (MIT). Please see [License File](LICENSE) for more information.
