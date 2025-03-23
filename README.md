@@ -1,3 +1,7 @@
+<p align="center">
+        <img src="https://banners.beyondco.de/TransSFC.png?theme=dark&packageManager=composer+require&packageName=iammarjamal%2Ftranssfc&pattern=anchorsAway&style=style_1&description=translating+Blade+components+directly+within+components&md=1&showWatermark=0&fontSize=100px&images=https%3A%2F%2Flaravel.com%2Fimg%2Flogomark.min.svg" width="100%" alt="TransSFC">
+</p>
+
 # TransSFC  
 TransSFC is a Laravel package for translating Blade components directly within components using `@TransSFC()`, auto-extracting texts into language files.
 <br /><br />
