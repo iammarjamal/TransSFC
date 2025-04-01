@@ -1,12 +1,15 @@
 // Import required modules.
-const chokidar = require("chokidar"); // Module for watching file changes.
-const fs = require("fs-extra"); // Module for file system operations.
-const path = require("path"); // Module for handling file paths.
-const crypto = require("crypto"); // Module for generating file hashes.
+import chokidar from "chokidar"; // Module for watching file changes.
+import fs from "fs-extra"; // Module for file system operations.
+import path from "path"; // Module for handling file paths.
+import crypto from "crypto"; // Module for generating file hashes.
+
+// Get the absolute path of the Laravel project
+const laravelProjectPath = process.cwd(); // Correct Laravel project root
 
 // Define paths for Blade views and translation files.
-const viewsPath = path.join(__dirname, "../../../resources/views");
-const langPath = path.join(__dirname, "../../../lang");
+const viewsPath = path.join(laravelProjectPath, "resources/views");
+const langPath = path.join(laravelProjectPath, "lang");
 
 console.log(
     "🔍 Starting async watch on Blade files for translation updates..."

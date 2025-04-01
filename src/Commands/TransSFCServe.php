@@ -13,7 +13,7 @@ class TransSFCServe extends Command
 
     public function handle(): int
     {
-        $nodeScriptPath = base_path('vendor/iammarjamal/transsfc/src/Watcher/index.js');
+        $nodeScriptPath = base_path('vendor/iammarjamal/transsfc/src/Watcher/index.mjs');
 
         if (!file_exists($nodeScriptPath)) {
             $this->error("Node.js script not found at: {$nodeScriptPath}");
